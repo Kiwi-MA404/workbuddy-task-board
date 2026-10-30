@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f5f6f8" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="任务看板" />
+<meta name="robots" content="noindex, nofollow" />
+<title>任务看板</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="stylesheet" href="styles.css?v=2026103014" />
+</head>
+<body>
+
+<!-- 登录 -->
+<section id="view-login" class="view">
+  <div class="login-wrap">
+    <div class="brand">
+      <div class="brand-mark">任</div>
+      <h1>任务看板</h1>
+      <p class="brand-sub">仅限授权账户访问的私有面板</p>
+    </div>
+
+    <div class="panel">
+      <button id="btn-workbuddy" class="btn btn-primary" type="button">使用 WorkBuddy 登录</button>
+      <p class="hint" id="login-hint">推荐使用与电脑端相同的账号，登录后即可查看你的任务。</p>
+
+      <div class="divider"><span>或使用邮箱验证码</span></div>
+
+      <form id="form-email" autocomplete="on">
+        <label class="field">
+          <span>邮箱</span>
+          <input id="input-email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required />
+        </label>
+        <button id="btn-send-code" class="btn btn-ghost" type="button">获取验证码</button>
+        <label class="field" id="field-code" hidden>
+          <span>验证码</span>
+          <input id="input-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字" />
+        </label>
+        <button id="btn-email-login" class="btn btn-primary" type="submit">登录</button>
+      </form>
+
+      <p class="err" id="login-error" hidden></p>
+    </div>
+    <p class="footnote">每次关闭 WorkBuddy 时自动同步一次。电脑关机或 App 已关闭，这里依然能读到最新一次记录。</p>
+  </div>
+</section>
+
+<!-- 绑定 -->
+<section id="view-bind" class="view" hidden>
+  <div class="login-wrap">
+    <div class="brand">
+      <div class="brand-mark">任</div>
+      <h1>绑定这台电脑</h1>
+      <p class="brand-sub">首次使用需要一次设备授权</p>
+    </div>
+    <div class="panel">
+      <p class="hint">请输入电脑端安装时生成的一次性绑定码（10 位）。绑定成功后，本账号将独占这台电脑的任务数据。</p>
+      <form id="form-bind">
+        <label class="field">
+          <span>绑定码</span>
+          <input id="input-bind" type="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="10" placeholder="XXXXXXXXXX" required />
+        </label>
+        <button class="btn btn-primary" type="submit">确认绑定</button>
+      </form>
+      <p class="err" id="bind-error" hidden></p>
+      <button id="btn-logout-bind" class="btn btn-text" type="button">退出登录</button>
+    </div>
+  </div>
+</section>
+
+<!-- 主面板 -->
+<section id="view-app" class="view" hidden>
+  <header class="topbar">
+    <div class="topbar-main">
+      <div class="topbar-title">
+        <span id="host-name">任务看板</span>
+        <span id="host-pill" class="pill pill-unknown">检测中</span>
+      </div>
+      <div class="topbar-sub">
+        <span id="sync-time">—</span>
+        <button id="btn-refresh" class="icon-btn" type="button" aria-label="刷新">↻</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <div class="chips" id="chips"></div>
+    <input id="search" class="search" type="search" placeholder="搜索任务标题或工作区" />
+  </div>
+
+  <main id="list" class="list"></main>
+  <div id="empty" class="empty" hidden></div>
+
+  <footer class="footer">
+    <button id="btn-logout" class="btn btn-text" type="button">退出登录</button>
+  </footer>
+</section>
+
+<!-- 详情抽屉 -->
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close="1"></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true">
+    <div class="sheet-grab"></div>
+    <div id="sheet-body"></div>
+    <button class="btn btn-ghost" type="button" data-close="1">关闭</button>
+  </div>
+</div>
+
+<!-- 轻提示 -->
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<!-- 站点配置：从 config.example.js 复制为 config.js 后填写。缺失时页面会给出提示 -->
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@0.1.4/lib/index.global.js"></script>
+<script src="app.js?v=2026103014"></script>
+</body>
+</html>

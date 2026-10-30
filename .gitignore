@@ -1,0 +1,16 @@
+# 密钥与本地配置不入库
+web/config.js
+sync/config.json
+sync/.env
+
+# macOS
+.DS_Store
+._*
+
+# 日志与临时文件
+*.log
+/tmp/
+
+# 编辑器
+.vscode/
+.idea/
