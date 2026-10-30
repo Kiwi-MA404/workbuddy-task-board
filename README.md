@@ -8,9 +8,11 @@
 
 - **任务列表**：标题、状态、工作区、模型、消息数，按今天 / 昨天 / 本周分组
 - **完整对话**：点开任意任务，按桌面端样式渲染——头像、气泡、时间戳、代码块、表格、列表
+- **产物清单**：每个任务生成的文件（报告、代码、压缩包）名称、类型、大小与时间；文件留在电脑上，手机只看清单
 - **手机可安装**：添加到主屏幕后全屏运行，有独立图标，和原生 App 观感一致
 - **关机可查**：云端持有最后一份快照，与电脑是否通电无关
 - **搜索**：按标题、工作区、摘要过滤
+- **退出自动补传**：关闭 WorkBuddy 后最迟 2 分钟自动同步一次（可选，`install.sh --auto`；守卫脚本在 App 运行期间立即退出，无常驻进程）
 
 ## 它不做什么
 
@@ -86,7 +88,7 @@ window.WB_CONFIG = { publishableKey: 'wbpk_你的值' };
 WB_ENDPOINT=https://你的应用地址 \
 WB_PUBLISHABLE_KEY=wbpk_你的值 \
 WB_INGEST_TOKEN=第 3 步的设备令牌 \
-bash sync/install.sh
+bash sync/install.sh          # 加 --auto 可启用「退出后自动补传」
 ```
 
 读 `~/.workbuddy` 需要授权：首次运行如提示权限不足，到「系统设置 → 隐私与安全性 → 完全磁盘访问」里给「终端」或该 App 打开开关。
@@ -105,11 +107,15 @@ web/            静态站点（PWA）
   icons/              图标，由 tools/make-icons.py 生成
 sync/           本机同步（纯标准库 Python 3，无第三方依赖）
   sync.py             采集 + 上传
-  install.sh          安装同步按钮
+  watch.sh            「退出后自动补传」的轻量守卫（由 launchd 周期唤起）
+  launchd.plist.in    定时器模板（install.sh --auto 使用）
+  install.sh          安装同步按钮；--auto 额外安装退出自动补传
   任务同步.applescript  可双击的按钮外壳
 sql/            云数据库 schema / 函数 / 权限 / 设备登记
+  migrations/         版本间升级脚本
 tools/          图标生成脚本
 docs/DEPLOY.md  详细部署与排错
+CHANGELOG.md    版本记录
 ```
 
 ## 安全模型

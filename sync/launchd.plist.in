@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  退出后自动上传的定时器模板。install.sh 会把 __HOME__ 替换成真实家目录后
+  写入 ~/Library/LaunchAgents/cn.wbtb.quitsync.plist。
+  每 120 秒唤起一次 watch.sh；脚本自身在 App 运行期间立即退出。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>cn.wbtb.quitsync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__HOME__/.wb-sync/watch.sh</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>120</integer>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>LowPriorityIO</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.wb-sync/state/launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.wb-sync/state/launchd.err.log</string>
+</dict>
+</plist>

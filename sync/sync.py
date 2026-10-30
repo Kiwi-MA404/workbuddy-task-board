@@ -27,8 +27,12 @@ LOG_PATH = os.path.join(BASE, "sync.log")
 
 DB_PATH = os.path.join(HOME, ".workbuddy", "workbuddy.db")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
+ARTIFACT_DIR = os.path.join(HOME, ".workbuddy", "artifact-index")
+STATE_DIR = os.path.join(BASE, "state")
 
 MAX_TRANSCRIPT_CHARS = 400000
+ARTIFACT_MAX = 12           # 每个任务最多同步的产物条数（取最近更新的）
+DB_MTIME_MARK = os.path.join(STATE_DIR, "last-db-mtime")
 SYSTEM_RE = re.compile(r"<system-reminder[\s\S]*?</system-reminder>", re.I)
 USER_QUERY_RE = re.compile(r"</?user_query>", re.I)
 
@@ -93,6 +97,8 @@ def query(sql):
 
 
 def read_sessions():
+    # 只同步本机会话：transport='cloud' 的任务在云端运行，本地没有会话文件，
+    # 同步上去只有标题、点开是空的，反而干扰阅读。
     return query(
         """
         SELECT id, cwd,
@@ -100,6 +106,7 @@ def read_sessions():
                status, model, mode, created_at, updated_at, last_activity_at
         FROM sessions
         WHERE (deleted_at IS NULL OR deleted_at <= 0)
+          AND COALESCE(transport, 'local') <> 'cloud'
         ORDER BY updated_at DESC LIMIT 400
         """
     )
@@ -204,6 +211,44 @@ def inspect(path, cache):
     return entry, messages
 
 
+def read_artifacts(session_id, cache):
+    """读取该会话的产物清单（只取元数据，不含文件内容与完整路径）"""
+    path = os.path.join(ARTIFACT_DIR, session_id + ".json")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    cached = cache.get("artifact:" + path)
+    if cached and cached.get("mtime") == st.st_mtime and cached.get("size") == st.st_size:
+        return cached.get("items", [])
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+
+    items = []
+    for a in data.get("artifacts") or []:
+        if not isinstance(a, dict):
+            continue
+        name = a.get("title") or a.get("name") or ""
+        if not name:
+            continue
+        items.append(
+            {
+                "n": name,
+                "k": a.get("contentType") or a.get("type") or "file",
+                "m": a.get("mimeType") or "",
+                "s": int(a.get("size") or 0),
+                "t": a.get("updatedAt") or a.get("createdAt") or 0,
+            }
+        )
+    items.sort(key=lambda x: x.get("t") or 0, reverse=True)
+    items = items[:ARTIFACT_MAX]
+    cache["artifact:" + path] = {"mtime": st.st_mtime, "size": st.st_size, "items": items}
+    return items
+
+
 def collect(cache):
     sessions = read_sessions()
     automations = read_automations()
@@ -229,6 +274,7 @@ def collect(cache):
                 "mode": row.get("mode"),
                 "msg_count": len(messages) if messages else (info.get("count", 0) if info else 0),
                 "preview": info.get("preview") if info else None,
+                "artifacts": read_artifacts(row["id"], cache),
                 "created_at": iso(row.get("created_at")),
                 "updated_at": iso(row.get("updated_at")),
                 "last_activity_at": iso(row.get("last_activity_at") or row.get("updated_at")),
@@ -259,7 +305,7 @@ def collect(cache):
         "full": True,
         "host_name": os.uname().nodename.replace(".local", ""),
         "platform": "darwin %s %s" % (os.uname().release, os.uname().machine),
-        "agent_version": "3.0.0-manual",
+        "agent_version": "3.1.0-manual",
         "stats": {
             "total": sum(1 for t in tasks if t["kind"] == "session"),
             "working": sum(1 for t in tasks if t["status"] == "working"),
@@ -322,6 +368,16 @@ def chunk(items, max_items=3, max_chars=700000):
     return batches
 
 
+def mark_synced():
+    """记录本次同步时的数据库版本，供「退出后自动上传」的守卫判重"""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(DB_MTIME_MARK, "w", encoding="utf-8") as fh:
+            fh.write(str(int(os.stat(DB_PATH).st_mtime)))
+    except OSError:
+        pass
+
+
 def main():
     config = read_json(CONFIG_PATH, None)
     if not config or not config.get("endpoint") or not config.get("ingestToken"):
@@ -369,6 +425,7 @@ def main():
             log("error", "对话正文上传失败（%d 条）：%s" % (len(batch), exc))
 
     write_json(CACHE_PATH, cache)
+    mark_synced()
 
     summary = "%d 个任务" % task_count
     if transcripts:

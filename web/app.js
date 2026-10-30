@@ -260,7 +260,7 @@
 
     const taskRes = await cloud.database
       .from('wb_task')
-      .select('task_uid,kind,title,status,workspace,model,mode,msg_count,preview,created_at,updated_at,last_activity_at')
+      .select('task_uid,kind,title,status,workspace,model,mode,msg_count,preview,artifacts,created_at,updated_at,last_activity_at')
       .order('updated_at', { ascending: false })
       .limit(400);
     if (taskRes.error) throw new Error(taskRes.error.message || '读取任务列表失败');
@@ -322,10 +322,8 @@
 
   function renderHostStatus() {
     const host = state.host;
-    const pill = $('host-pill');
-    // 数据只在电脑端点「任务同步」按钮时上传，因此「电脑在线」不是有效判据，统一以数据时点表述
-    if (pill) pill.hidden = true;
-
+    // 数据只在电脑端点「任务同步」按钮（或退出 WorkBuddy 后自动补传）时更新，
+    // 因此「电脑在线」不是有效判据，统一以数据时点表述。
     if (!host) {
       $('sync-time').textContent = '尚无同步记录';
       return;
@@ -407,6 +405,11 @@
     if (task.msg_count > 0) {
       metaRow.appendChild(el('span', 'dot'));
       metaRow.appendChild(el('span', null, `${task.msg_count} 条对话`));
+    }
+    const artCount = Array.isArray(task.artifacts) ? task.artifacts.length : 0;
+    if (artCount > 0) {
+      metaRow.appendChild(el('span', 'dot'));
+      metaRow.appendChild(el('span', null, `${artCount} 个产物`));
     }
     if (task.model) {
       metaRow.appendChild(el('span', 'dot'));
@@ -693,6 +696,46 @@
     }
   }
 
+  function fmtSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n <= 0) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
+    return `${(n / 1073741824).toFixed(2)} GB`;
+  }
+
+  /** 产物清单：只显示名称、类型、大小与时间；文件本身留在电脑上 */
+  function buildArtifacts(task) {
+    const items = Array.isArray(task.artifacts) ? task.artifacts : [];
+    if (!items.length) return null;
+
+    const sec = el('section', 'artifacts');
+    const head = el('div', 'conv-head');
+    head.appendChild(el('span', 'conv-title', '产物'));
+    head.appendChild(el('span', 'conv-count', `${items.length} 个`));
+    sec.appendChild(head);
+
+    const list = el('ul', 'artifact-list');
+    for (const a of items) {
+      const li = el('li', 'artifact');
+      const kind = String(a.k || 'file').slice(0, 4).toUpperCase();
+      li.appendChild(el('span', 'artifact-kind', kind));
+
+      const main = el('div', 'artifact-main');
+      main.appendChild(el('div', 'artifact-name', a.n || '(未命名)'));
+      const stamp = a.t ? new Date(Number(a.t)) : null;
+      const when = stamp && !Number.isNaN(stamp.getTime()) ? fmtRelative(stamp.toISOString()) : '';
+      const meta = [fmtSize(a.s), when].filter(Boolean).join(' · ');
+      if (meta) main.appendChild(el('div', 'artifact-meta', meta));
+      li.appendChild(main);
+
+      list.appendChild(li);
+    }
+    sec.appendChild(list);
+    return sec;
+  }
+
   function openSheet(task) {
     const body = $('sheet-body');
     body.textContent = '';
@@ -705,7 +748,11 @@
       body.appendChild(statusWrap);
     }
 
-    // 对话正文（优先展示，按需加载）
+    // 产物清单（有则显示，位于对话之上，避免长对话把它挤到屏幕外）
+    const artSec = buildArtifacts(task);
+    if (artSec) body.appendChild(artSec);
+
+    // 对话正文（按需加载）
     const conv = el('section', 'conv');
     const convHead = el('div', 'conv-head');
     convHead.appendChild(el('span', 'conv-title', '对话记录'));

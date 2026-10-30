@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS wb_task (
   transcript       JSONB,                              -- [{r:'u'|'a', t, ts}]
   transcript_count INTEGER,
   transcript_at    TIMESTAMPTZ,
+  artifacts        JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{n,k,m,s,t}] 产物元数据，不含文件内容
   created_at       TIMESTAMPTZ,
   updated_at       TIMESTAMPTZ,
   last_activity_at TIMESTAMPTZ,

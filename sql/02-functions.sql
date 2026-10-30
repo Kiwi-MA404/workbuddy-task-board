@@ -39,12 +39,13 @@ BEGIN
 
   FOR v_item IN SELECT value FROM jsonb_array_elements(COALESCE(p_payload->'tasks','[]'::jsonb)) LOOP
     INSERT INTO wb_task (host_id, owner_id, kind, task_uid, title, status, workspace, model, mode,
-                         msg_count, preview, created_at, updated_at, last_activity_at, synced_at)
+                         msg_count, preview, artifacts, created_at, updated_at, last_activity_at, synced_at)
     VALUES (v_host_id, v_owner,
             COALESCE(NULLIF(v_item->>'kind',''), 'session'),
             v_item->>'uid', v_item->>'title', v_item->>'status', v_item->>'workspace',
             v_item->>'model', v_item->>'mode',
             COALESCE((v_item->>'msg_count')::int, 0), v_item->>'preview',
+            COALESCE(v_item->'artifacts', '[]'::jsonb),
             NULLIF(v_item->>'created_at','')::timestamptz,
             NULLIF(v_item->>'updated_at','')::timestamptz,
             NULLIF(v_item->>'last_activity_at','')::timestamptz,
@@ -58,6 +59,7 @@ BEGIN
       mode = EXCLUDED.mode,
       msg_count = EXCLUDED.msg_count,
       preview = EXCLUDED.preview,
+      artifacts = EXCLUDED.artifacts,
       created_at = COALESCE(EXCLUDED.created_at, wb_task.created_at),
       updated_at = EXCLUDED.updated_at,
       last_activity_at = EXCLUDED.last_activity_at,
