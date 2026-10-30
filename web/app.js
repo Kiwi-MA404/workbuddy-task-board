@@ -323,7 +323,7 @@
   function renderHostStatus() {
     const host = state.host;
     const pill = $('host-pill');
-    // 数据只在关闭 App 时上传一次，因此「电脑在线」不再是有效判据，统一以数据时点表述
+    // 数据只在电脑端点「任务同步」按钮时上传，因此「电脑在线」不是有效判据，统一以数据时点表述
     if (pill) pill.hidden = true;
 
     if (!host) {
