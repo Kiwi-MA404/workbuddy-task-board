@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <link rel="icon" href="icons/icon-192.png" />
-<link rel="stylesheet" href="styles.css?v=1.1.0" />
+<link rel="stylesheet" href="styles.css?v=1.2.0" />
 </head>
 <body>
 
@@ -102,13 +102,31 @@
   </footer>
 </section>
 
-<!-- 详情抽屉 -->
+<!-- 详情抽屉：窄屏为底部抽屉，宽屏为右侧面板 + 右侧对话导航 -->
 <div id="sheet" class="sheet" hidden>
   <div class="sheet-backdrop" data-close="1"></div>
-  <div class="sheet-panel" role="dialog" aria-modal="true">
-    <div class="sheet-grab"></div>
-    <div id="sheet-body"></div>
-    <button class="btn btn-ghost" type="button" data-close="1">关闭</button>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-label="任务详情" tabindex="-1">
+    <div class="sheet-scroll" id="sheet-scroll">
+      <div class="sheet-grab"></div>
+      <div id="sheet-body"></div>
+      <button class="btn btn-ghost" type="button" data-close="1">关闭</button>
+    </div>
+
+    <button id="btn-nav" class="nav-toggle" type="button" aria-expanded="false" aria-controls="sheet-nav">
+      <span class="nav-toggle-icon" aria-hidden="true">☰</span>
+      <span>对话列表</span>
+      <span class="nav-toggle-count" id="nav-toggle-count"></span>
+    </button>
+
+    <aside id="sheet-nav" class="sheet-nav" aria-label="对话列表" aria-hidden="true">
+      <div class="nav-head">
+        <span class="nav-head-title">对话列表</span>
+        <span class="nav-head-count" id="nav-count"></span>
+        <button id="btn-nav-close" class="nav-close" type="button" aria-label="收起对话列表">✕</button>
+      </div>
+      <div class="nav-body" id="nav-body"></div>
+    </aside>
+    <div class="nav-scrim" id="nav-scrim" hidden></div>
   </div>
 </div>
 
@@ -118,6 +136,6 @@
 <!-- 站点配置：从 config.example.js 复制为 config.js 后填写。缺失时页面会给出提示 -->
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@0.1.4/lib/index.global.js"></script>
-<script src="app.js?v=1.1.0"></script>
+<script src="app.js?v=1.2.0"></script>
 </body>
 </html>

@@ -29,8 +29,19 @@
   ];
 
   const $ = (id) => document.getElementById(id);
-  const state = { session: null, host: null, tasks: [], filter: 'all', query: '', timer: null, busy: false };
+  const state = {
+    session: null,
+    host: null,
+    tasks: [],
+    filter: 'all',
+    query: '',
+    timer: null,
+    busy: false,
+    currentUid: null, // 正在阅读的任务，用于右侧导航高亮
+    navOpen: false, // 窄屏下导航是否展开
+  };
   let cloud = null;
+  const WIDE = () => window.matchMedia('(min-width: 900px)').matches;
 
   /* ---------------- 工具 ---------------- */
 
@@ -429,6 +440,8 @@
     renderHostStatus();
     renderStats();
     renderChips();
+    // 详情打开时，数据刷新后同步导航列表
+    if ($('sheet') && !$('sheet').hidden) buildNav();
   }
 
   /** 任务列表：搜索与筛选时只重建这一部分，避免整页重排 */
@@ -460,10 +473,10 @@
     }
   }
 
-  /** 把抽屉滚到对话末尾，让最近一条消息直接可见 */
+  /** 把内容列滚到对话末尾，让最近一条消息直接可见 */
   function scrollToConversationEnd(container) {
     requestAnimationFrame(() => {
-      const panel = document.querySelector('.sheet-panel');
+      const panel = $('sheet-scroll');
       if (!panel || !container) return;
       const panelRect = panel.getBoundingClientRect();
       const bodyRect = container.getBoundingClientRect();
@@ -661,13 +674,17 @@
   }
 
   /** 按需拉取单个任务的对话正文；列表查询不包含正文字段 */
+  let transcriptSeq = 0;
+
   async function loadTranscript(task, container, countEl) {
+    const seq = (transcriptSeq += 1);
     try {
       const { data, error } = await cloud.database
         .from('wb_task')
         .select('transcript,transcript_count')
         .eq('task_uid', task.task_uid)
         .maybeSingle();
+      if (seq !== transcriptSeq) return; // 已切换到其他任务，丢弃过期结果
       if (error) throw error;
 
       const messages = data && Array.isArray(data.transcript) ? data.transcript : [];
@@ -691,6 +708,7 @@
       renderConversation(container, messages);
       scrollToConversationEnd(container);
     } catch (e) {
+      if (seq !== transcriptSeq) return;
       container.textContent = '';
       container.appendChild(el('div', 'conv-hint', `对话读取失败：${e.message || '请稍后重试'}`));
     }
@@ -736,7 +754,101 @@
     return sec;
   }
 
+  /* ---------------- 右侧对话导航 ---------------- */
+
+  /** 构建导航列表：按日期分组，与主列表同一排序 */
+  function buildNav() {
+    const body = $('nav-body');
+    if (!body) return;
+    const keepTop = body.scrollTop;
+    body.textContent = '';
+
+    if (!state.tasks.length) {
+      body.appendChild(el('div', 'nav-empty', '暂无对话'));
+    } else {
+      const frag = document.createDocumentFragment();
+      let bucket = null;
+      for (const task of state.tasks) {
+        const label = dayBucket(task.updated_at || task.last_activity_at);
+        if (label !== bucket) {
+          bucket = label;
+          frag.appendChild(el('div', 'nav-group', label));
+        }
+        frag.appendChild(buildNavItem(task));
+      }
+      body.appendChild(frag);
+    }
+
+    const total = state.tasks.length;
+    if ($('nav-count')) $('nav-count').textContent = `${total} 个`;
+    if ($('nav-toggle-count')) $('nav-toggle-count').textContent = `${total}`;
+    body.scrollTop = keepTop;
+    updateNavActive();
+  }
+
+  function buildNavItem(task) {
+    const btn = el('button', 'nav-item');
+    btn.type = 'button';
+    btn.dataset.uid = task.task_uid;
+    btn.setAttribute('aria-current', task.task_uid === state.currentUid ? 'true' : 'false');
+    if (task.task_uid === state.currentUid) btn.classList.add('is-current');
+
+    btn.appendChild(el('span', 'nav-title', task.title || '(未命名任务)'));
+    const bits = [fmtRelative(task.updated_at || task.last_activity_at)];
+    if (task.msg_count > 0) bits.push(`${task.msg_count} 条`);
+    if (Array.isArray(task.artifacts) && task.artifacts.length) bits.push(`${task.artifacts.length} 产物`);
+    btn.appendChild(el('span', 'nav-meta', bits.join(' · ')));
+
+    btn.addEventListener('click', () => selectTask(task.task_uid));
+    return btn;
+  }
+
+  /** 只更新高亮与 aria-current，避免每次切换都重建整份列表 */
+  function updateNavActive() {
+    const body = $('nav-body');
+    if (!body) return;
+    for (const node of body.querySelectorAll('.nav-item')) {
+      const on = node.dataset.uid === state.currentUid;
+      node.classList.toggle('is-current', on);
+      node.setAttribute('aria-current', on ? 'true' : 'false');
+    }
+    const active = body.querySelector('.nav-item.is-current');
+    if (!active) return;
+    const a = active.getBoundingClientRect();
+    const b = body.getBoundingClientRect();
+    if (a.top < b.top) body.scrollTop += a.top - b.top - 8;
+    else if (a.bottom > b.bottom) body.scrollTop += a.bottom - b.bottom + 8;
+  }
+
+  /** 展开 / 收起导航；宽屏下始终展开 */
+  function setNavOpen(open) {
+    const nav = $('sheet-nav');
+    const scrim = $('nav-scrim');
+    const btn = $('btn-nav');
+    if (!nav) return;
+    const wide = WIDE();
+    const next = wide ? true : !!open;
+    state.navOpen = next;
+    nav.classList.toggle('is-open', next);
+    nav.setAttribute('aria-hidden', next ? 'false' : 'true');
+    if (scrim) scrim.hidden = wide || !next;
+    if (btn) btn.setAttribute('aria-expanded', String(next));
+  }
+
+  /** 选中某个对话：高亮 + 加载详情；已选中则只收起导航 */
+  function selectTask(uid) {
+    const task = state.tasks.find((t) => t.task_uid === uid);
+    if (!task) return;
+    if (!WIDE()) setNavOpen(false);
+    if (uid === state.currentUid) {
+      updateNavActive();
+      return;
+    }
+    openSheet(task);
+  }
+
   function openSheet(task) {
+    state.currentUid = task.task_uid;
     const body = $('sheet-body');
     body.textContent = '';
     body.appendChild(el('h2', null, task.title || '(未命名任务)'));
@@ -782,13 +894,19 @@
     body.appendChild(dl);
 
     $('sheet').hidden = false;
+    const scroller = $('sheet-scroll');
+    if (scroller) scroller.scrollTop = 0; // 重置上次阅读位置，随后再定位到末尾
+    buildNav();
+    setNavOpen(WIDE());
     const panel = document.querySelector('.sheet-panel');
-    if (panel) panel.scrollTop = 0; // 重置上次打开的滚动位置，随后再定位到末尾
+    if (panel) panel.focus({ preventScroll: true });
     loadTranscript(task, convBody, convCount);
   }
 
   function closeSheet() {
     $('sheet').hidden = true;
+    state.currentUid = null;
+    setNavOpen(false);
   }
 
   /* ---------------- 启动 ---------------- */
@@ -836,6 +954,30 @@
     });
     $('sheet').addEventListener('click', (e) => {
       if (e.target.closest('[data-close]')) closeSheet();
+    });
+
+    // 右侧对话导航
+    $('btn-nav').addEventListener('click', () => setNavOpen(!state.navOpen));
+    $('btn-nav-close').addEventListener('click', () => setNavOpen(false));
+    $('nav-scrim').addEventListener('click', () => setNavOpen(false));
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const sheet = $('sheet');
+      if (!sheet || sheet.hidden) return;
+      if (!WIDE() && state.navOpen) {
+        setNavOpen(false);
+      } else {
+        closeSheet();
+      }
+      e.preventDefault();
+    });
+    let navResizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(navResizeTimer);
+      navResizeTimer = setTimeout(() => {
+        if ($('sheet').hidden) return;
+        setNavOpen(WIDE());
+      }, 120);
     });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && state.session) refresh({ silent: true });
