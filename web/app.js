@@ -39,6 +39,9 @@
     busy: false,
     currentUid: null, // 正在阅读的任务，用于右侧导航高亮
     navOpen: false, // 窄屏下导航是否展开
+    section: 'tasks', // 导航当前展开的分段
+    messages: [], // 当前任务的对话正文
+    files: [], // 当前任务已同步的文件
   };
   let cloud = null;
   const WIDE = () => window.matchMedia('(min-width: 900px)').matches;
@@ -633,8 +636,8 @@
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  /** 同一角色的连续消息归为一组：头像与名称只出现一次 */
-  function buildMessageGroup(role, msgs) {
+  /** 同一角色的连续消息归为一组：头像与名称只出现一次；每气泡带消息序号供定位 */
+  function buildMessageGroup(role, items) {
     const isUser = role === 'u';
     const group = el('div', `msg-group${isUser ? ' is-user' : ' is-ai'}`);
 
@@ -643,8 +646,10 @@
     head.appendChild(el('span', 'msg-name', isUser ? '我' : 'WorkBuddy'));
     group.appendChild(head);
 
-    for (const m of msgs) {
+    for (const item of items) {
+      const m = item.m;
       const bubble = el('div', `msg-bubble${isUser ? ' is-user' : ' is-ai'}`);
+      bubble.dataset.idx = String(item.idx);
       bubble.innerHTML = renderMarkdown(m.t || '');
       group.appendChild(bubble);
       const t = fmtMsgTime(m.ts);
@@ -662,13 +667,13 @@
       if (cur.length) frag.appendChild(buildMessageGroup(curRole, cur));
       cur = [];
     };
-    for (const m of messages) {
+    messages.forEach((m, idx) => {
       if (m.r !== curRole) {
         flush();
         curRole = m.r;
       }
-      cur.push(m);
-    }
+      cur.push({ m, idx });
+    });
     flush();
     container.appendChild(frag);
   }
@@ -688,6 +693,8 @@
       if (error) throw error;
 
       const messages = data && Array.isArray(data.transcript) ? data.transcript : [];
+      state.messages = messages;
+      buildTurns(messages);
       container.textContent = '';
 
       if (!messages.length) {
@@ -723,38 +730,7 @@
     return `${(n / 1073741824).toFixed(2)} GB`;
   }
 
-  /** 产物清单：只显示名称、类型、大小与时间；文件本身留在电脑上 */
-  function buildArtifacts(task) {
-    const items = Array.isArray(task.artifacts) ? task.artifacts : [];
-    if (!items.length) return null;
-
-    const sec = el('section', 'artifacts');
-    const head = el('div', 'conv-head');
-    head.appendChild(el('span', 'conv-title', '产物'));
-    head.appendChild(el('span', 'conv-count', `${items.length} 个`));
-    sec.appendChild(head);
-
-    const list = el('ul', 'artifact-list');
-    for (const a of items) {
-      const li = el('li', 'artifact');
-      const kind = String(a.k || 'file').slice(0, 4).toUpperCase();
-      li.appendChild(el('span', 'artifact-kind', kind));
-
-      const main = el('div', 'artifact-main');
-      main.appendChild(el('div', 'artifact-name', a.n || '(未命名)'));
-      const stamp = a.t ? new Date(Number(a.t)) : null;
-      const when = stamp && !Number.isNaN(stamp.getTime()) ? fmtRelative(stamp.toISOString()) : '';
-      const meta = [fmtSize(a.s), when].filter(Boolean).join(' · ');
-      if (meta) main.appendChild(el('div', 'artifact-meta', meta));
-      li.appendChild(main);
-
-      list.appendChild(li);
-    }
-    sec.appendChild(list);
-    return sec;
-  }
-
-  /* ---------------- 右侧对话导航 ---------------- */
+  /* ---------------- 右侧导航：对话列表 / 消息目录 / 文件 ---------------- */
 
   /** 构建导航列表：按日期分组，与主列表同一排序 */
   function buildNav() {
@@ -779,9 +755,7 @@
       body.appendChild(frag);
     }
 
-    const total = state.tasks.length;
-    if ($('nav-count')) $('nav-count').textContent = `${total} 个`;
-    if ($('nav-toggle-count')) $('nav-toggle-count').textContent = `${total}`;
+    if ($('nav-count')) $('nav-count').textContent = `${state.tasks.length}`;
     body.scrollTop = keepTop;
     updateNavActive();
   }
@@ -818,6 +792,190 @@
     const b = body.getBoundingClientRect();
     if (a.top < b.top) body.scrollTop += a.top - b.top - 8;
     else if (a.bottom > b.bottom) body.scrollTop += a.bottom - b.bottom + 8;
+  }
+
+  /** 三段折叠：同一时刻只展开一段，展开的那段占据剩余高度 */
+  function setSection(name) {
+    state.section = name;
+    for (const sec of document.querySelectorAll('.nav-sec')) {
+      const on = sec.dataset.sec === name;
+      sec.classList.toggle('is-open', on);
+      const head = sec.querySelector('.nav-sec-head');
+      if (head) head.setAttribute('aria-expanded', String(on));
+    }
+  }
+
+  /** 消息目录：以每条用户提问为起点，点击定位到该轮对话 */
+  function buildTurns(messages) {
+    const body = $('turn-body');
+    if (!body) return;
+    body.textContent = '';
+    const turns = [];
+    messages.forEach((m, i) => {
+      if (m.r !== 'u') return;
+      const text = String(m.t || '')
+        .replace(/[`*_>#]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      turns.push({ i, text: text.slice(0, 90) || '(空消息)', ts: m.ts });
+    });
+
+    if (!turns.length) {
+      body.appendChild(el('div', 'nav-empty', '该任务没有可定位的提问。'));
+    } else {
+      const frag = document.createDocumentFragment();
+      turns.forEach((turn, n) => {
+        const btn = el('button', 'turn-item');
+        btn.type = 'button';
+        btn.appendChild(el('span', 'turn-no', String(n + 1)));
+        const main = el('div', 'turn-main');
+        main.appendChild(el('div', 'turn-text', turn.text));
+        const time = fmtMsgTime(turn.ts);
+        if (time) main.appendChild(el('div', 'turn-meta', time));
+        btn.appendChild(main);
+        btn.addEventListener('click', () => gotoMessage(turn.i));
+        frag.appendChild(btn);
+      });
+      body.appendChild(frag);
+    }
+    if ($('turn-count')) $('turn-count').textContent = String(turns.length);
+  }
+
+  /** 把某条消息滚到视野内并短暂高亮 */
+  function gotoMessage(index) {
+    const scroller = $('sheet-scroll');
+    const node = document.querySelector(`.conv-body [data-idx="${index}"]`);
+    if (!scroller || !node) return;
+    const s = scroller.getBoundingClientRect();
+    const n = node.getBoundingClientRect();
+    scroller.scrollTop += n.top - s.top - 16;
+
+    const group = node.closest ? node.closest('.msg-group') : null;
+    if (group) {
+      group.classList.add('msg-flash');
+      setTimeout(() => group.classList.remove('msg-flash'), 1500);
+    }
+    if (!WIDE()) setNavOpen(false);
+  }
+
+  /** 任务内的产物文件（云端副本）；点开按需取正文 */
+  async function buildFiles(task) {
+    const body = $('file-body');
+    if (!body) return;
+    body.textContent = '';
+    body.appendChild(el('div', 'nav-empty', '正在读取…'));
+    if ($('file-count')) $('file-count').textContent = '';
+    try {
+      const { data, error } = await cloud.database
+        .from('wb_file')
+        .select('id,name,mime,size,updated_at')
+        .eq('task_uid', task.task_uid)
+        .order('updated_at', { ascending: false })
+        .limit(200);
+      if (error) throw error;
+      const files = data || [];
+      state.files = files;
+      body.textContent = '';
+      if (!files.length) {
+        body.appendChild(el('div', 'nav-empty', '该任务没有已同步的文件。'));
+      } else {
+        const frag = document.createDocumentFragment();
+        for (const f of files) frag.appendChild(buildFileItem(f));
+        body.appendChild(frag);
+      }
+      if ($('file-count')) $('file-count').textContent = String(files.length);
+    } catch (e) {
+      body.textContent = '';
+      body.appendChild(el('div', 'nav-empty', `文件读取失败：${e.message || '请稍后重试'}`));
+    }
+  }
+
+  function buildFileItem(file) {
+    const btn = el('button', 'file-item');
+    btn.type = 'button';
+    btn.appendChild(el('span', 'file-ext', fileExt(file.name)));
+    btn.appendChild(el('span', 'file-name', file.name || '(未命名)'));
+    btn.appendChild(el('span', 'file-size', fmtSize(file.size)));
+    btn.addEventListener('click', () => openFileView(file));
+    return btn;
+  }
+
+  function fileExt(name) {
+    const m = String(name || '').match(/\.([a-zA-Z0-9]{1,5})$/);
+    return m ? m[1].toUpperCase() : 'FILE';
+  }
+
+  function isTextLike(mime, name) {
+    if (/^text\//.test(mime)) return true;
+    if (/^application\/(json|xml|javascript|x-yaml)/.test(mime)) return true;
+    return /\.(md|txt|csv|json|js|ts|css|html|sh|py|yml|yaml|log)$/i.test(name || '');
+  }
+
+  function base64ToText(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  async function openFileView(file) {
+    const view = $('fileview');
+    const body = $('fileview-body');
+    if (!view || !body) return;
+    $('fileview-name').textContent = file.name || '(未命名)';
+    $('fileview-download').removeAttribute('href');
+    body.textContent = '';
+    body.appendChild(el('div', 'fileview-hint', '正在加载…'));
+    view.hidden = false;
+
+    try {
+      const { data, error } = await cloud.database
+        .from('wb_file')
+        .select('content_b64')
+        .eq('id', file.id)
+        .maybeSingle();
+      if (error) throw error;
+      const b64 = data && data.content_b64;
+      if (!b64) throw new Error('云端没有这个文件的内容');
+
+      const mime = file.mime || 'application/octet-stream';
+      const url = `data:${mime};base64,${b64}`;
+      const dl = $('fileview-download');
+      if (dl) {
+        dl.href = url;
+        dl.setAttribute('download', file.name || 'file');
+      }
+
+      body.textContent = '';
+      if (/^image\//.test(mime)) {
+        const img = el('img');
+        img.src = url;
+        img.alt = file.name || '';
+        body.appendChild(img);
+      } else if (/^audio\//.test(mime)) {
+        const audio = el('audio');
+        audio.controls = true;
+        audio.src = url;
+        body.appendChild(audio);
+      } else if (isTextLike(mime, file.name)) {
+        const pre = el('pre', null, base64ToText(b64));
+        body.appendChild(pre);
+      } else {
+        body.appendChild(
+          el('div', 'fileview-hint', '这类文件不支持在手机上预览，可点右上角「下载」保存后用其他应用打开。'),
+        );
+      }
+    } catch (e) {
+      body.textContent = '';
+      body.appendChild(el('div', 'fileview-hint', `文件读取失败：${e.message || '请稍后重试'}`));
+    }
+  }
+
+  function closeFileView() {
+    const view = $('fileview');
+    if (view) view.hidden = true;
+    const body = $('fileview-body');
+    if (body) body.textContent = '';
   }
 
   /** 展开 / 收起导航；宽屏下始终展开 */
@@ -860,10 +1018,6 @@
       body.appendChild(statusWrap);
     }
 
-    // 产物清单（有则显示，位于对话之上，避免长对话把它挤到屏幕外）
-    const artSec = buildArtifacts(task);
-    if (artSec) body.appendChild(artSec);
-
     // 对话正文（按需加载）
     const conv = el('section', 'conv');
     const convHead = el('div', 'conv-head');
@@ -901,12 +1055,17 @@
     const panel = document.querySelector('.sheet-panel');
     if (panel) panel.focus({ preventScroll: true });
     loadTranscript(task, convBody, convCount);
+    buildFiles(task);
   }
 
   function closeSheet() {
     $('sheet').hidden = true;
     state.currentUid = null;
+    state.messages = [];
+    state.files = [];
+    closeFileView();
     setNavOpen(false);
+    updateNavActive();
   }
 
   /* ---------------- 启动 ---------------- */
@@ -960,8 +1119,23 @@
     $('btn-nav').addEventListener('click', () => setNavOpen(!state.navOpen));
     $('btn-nav-close').addEventListener('click', () => setNavOpen(false));
     $('nav-scrim').addEventListener('click', () => setNavOpen(false));
+    for (const head of document.querySelectorAll('.nav-sec-head')) {
+      head.addEventListener('click', () => {
+        const sec = head.closest('.nav-sec');
+        if (sec) setSection(sec.dataset.sec);
+      });
+    }
+    $('fileview').addEventListener('click', (e) => {
+      if (e.target.closest('[data-fileclose]')) closeFileView();
+    });
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      const fv = $('fileview');
+      if (fv && !fv.hidden) {
+        closeFileView();
+        e.preventDefault();
+        return;
+      }
       const sheet = $('sheet');
       if (!sheet || sheet.hidden) return;
       if (!WIDE() && state.navOpen) {

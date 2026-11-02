@@ -151,6 +151,7 @@ BEGIN
   UPDATE wb_host SET owner_id = v_uid, bound_at = now(), bind_code_hash = NULL
    WHERE host_id = v_host.host_id;
   UPDATE wb_task SET owner_id = v_uid WHERE host_id = v_host.host_id;
+  UPDATE wb_file SET owner_id = v_uid WHERE host_id = v_host.host_id;
 
   RETURN jsonb_build_object('ok', true);
 END $fn$;

@@ -9,6 +9,7 @@
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -32,6 +34,9 @@ STATE_DIR = os.path.join(BASE, "state")
 
 MAX_TRANSCRIPT_CHARS = 400000
 ARTIFACT_MAX = 12           # 每个任务最多同步的产物条数（取最近更新的）
+FILE_MAX_BYTES = 4 * 1024 * 1024   # 单文件上限：超过则只同步元数据
+FILE_BATCH_BYTES = 3 * 1024 * 1024  # 单次上传的原始字节上限（base64 后约 4 MB）
+FILE_TOTAL_BYTES = 80 * 1024 * 1024  # 单次运行的总量上限，防止异常情况刷量
 DB_MTIME_MARK = os.path.join(STATE_DIR, "last-db-mtime")
 SYSTEM_RE = re.compile(r"<system-reminder[\s\S]*?</system-reminder>", re.I)
 USER_QUERY_RE = re.compile(r"</?user_query>", re.I)
@@ -234,6 +239,8 @@ def read_artifacts(session_id, cache):
         name = a.get("title") or a.get("name") or ""
         if not name:
             continue
+        uri = a.get("uri") or ""
+        local = urllib.parse.unquote(uri[7:]) if uri.startswith("file://") else ""
         items.append(
             {
                 "n": name,
@@ -241,6 +248,7 @@ def read_artifacts(session_id, cache):
                 "m": a.get("mimeType") or "",
                 "s": int(a.get("size") or 0),
                 "t": a.get("updatedAt") or a.get("createdAt") or 0,
+                "p": local,  # 仅本机使用，上传前剔除
             }
         )
     items.sort(key=lambda x: x.get("t") or 0, reverse=True)
@@ -256,6 +264,7 @@ def collect(cache):
 
     tasks = []
     transcripts = []
+    file_plan = []
     for row in sessions:
         path = files.get(row["id"])
         info, messages = inspect(path, cache) if path else (None, None)
@@ -263,6 +272,9 @@ def collect(cache):
             transcripts.append({"uid": row["id"], "path": path, "messages": messages})
         status = str(row.get("status") or "pending").lower()
         cwd = row.get("cwd") or ""
+        arts = read_artifacts(row["id"], cache)
+        if arts:
+            file_plan.append({"uid": row["id"], "artifacts": arts})
         tasks.append(
             {
                 "uid": row["id"],
@@ -274,7 +286,8 @@ def collect(cache):
                 "mode": row.get("mode"),
                 "msg_count": len(messages) if messages else (info.get("count", 0) if info else 0),
                 "preview": info.get("preview") if info else None,
-                "artifacts": read_artifacts(row["id"], cache),
+                # 本地路径不随快照上传
+                "artifacts": [{k: v for k, v in it.items() if k != "p"} for it in arts],
                 "created_at": iso(row.get("created_at")),
                 "updated_at": iso(row.get("updated_at")),
                 "last_activity_at": iso(row.get("last_activity_at") or row.get("updated_at")),
@@ -305,7 +318,7 @@ def collect(cache):
         "full": True,
         "host_name": os.uname().nodename.replace(".local", ""),
         "platform": "darwin %s %s" % (os.uname().release, os.uname().machine),
-        "agent_version": "3.1.0-manual",
+        "agent_version": "3.2.0-manual",
         "stats": {
             "total": sum(1 for t in tasks if t["kind"] == "session"),
             "working": sum(1 for t in tasks if t["status"] == "working"),
@@ -315,7 +328,7 @@ def collect(cache):
         },
         "tasks": tasks,
     }
-    return snapshot, transcripts
+    return snapshot, transcripts, file_plan
 
 
 # ---------------------------------------------------------------- 上传
@@ -368,6 +381,139 @@ def chunk(items, max_items=3, max_chars=700000):
     return batches
 
 
+# ---------------------------------------------------------------- 产物文件
+
+def plan_files(file_plan, cache):
+    """挑出需要上传的文件；已按 mtime+大小+归属校验过的跳过。
+
+    返回 (uploads, replace)：
+      uploads  待上传项（含原始字节，仅内存中）
+      replace  需要清理旧文件的任务清单（本任务下不在 names 里的将被删除）
+    """
+    uploads = []
+    replace = []
+    budget = FILE_TOTAL_BYTES
+
+    for task in file_plan:
+        names = []
+        changed = False
+        for art in task["artifacts"]:
+            name = art["n"]
+            names.append(name)
+            path = art.get("p") or ""
+            if not path or not os.path.isfile(path):
+                continue
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_size > FILE_MAX_BYTES:
+                continue
+
+            key = "file:" + path
+            cached = cache.get(key)
+            if (
+                cached
+                and cached.get("mtime") == st.st_mtime
+                and cached.get("size") == st.st_size
+                and cached.get("uid") == task["uid"]
+                and cached.get("name") == name
+            ):
+                continue
+            if st.st_size > budget:
+                log("warn", "本次总量已达上限，剩余文件留待下次：%s" % name)
+                break
+            try:
+                with open(path, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+
+            budget -= len(raw)
+            changed = True
+            uploads.append(
+                {
+                    "uid": task["uid"],
+                    "name": name,
+                    "mime": art.get("m") or "application/octet-stream",
+                    "size": len(raw),
+                    "sha": hashlib.sha256(raw).hexdigest(),
+                    "raw": raw,
+                    "_key": key,
+                    "_mtime": st.st_mtime,
+                    "_size": st.st_size,
+                }
+            )
+
+        name_key = "names:" + task["uid"]
+        if names and cache.get(name_key) != names:
+            replace.append({"uid": task["uid"], "names": names})
+        cache[name_key] = names
+
+    return uploads, replace
+
+
+def send_files(config, uploads, replace):
+    """一次上传调用；返回服务端结果"""
+    items = [
+        {
+            "task_uid": it["uid"],
+            "name": it["name"],
+            "mime": it["mime"],
+            "size": it["size"],
+            "sha": it["sha"],
+            "b64": base64.b64encode(it["raw"]).decode("ascii"),
+        }
+        for it in uploads
+    ]
+    payload = {"items": items}
+    if replace:
+        payload["replace"] = replace
+    return rpc(config, "wb_ingest_files", {"p_token": config["ingestToken"], "p_payload": payload})
+
+
+def push_files(config, uploads, replace, cache):
+    """按体积分批；返回 (成功文件数, 失败批数, 清理任务数)"""
+    state = {"done": 0, "failed": 0, "pruned": 0, "first": True}
+    pending_replace = list(replace)
+    batch = []
+    size = 0
+
+    def flush(current):
+        if not current and not (state["first"] and pending_replace):
+            return
+        try:
+            res = send_files(config, current, pending_replace if state["first"] else None)
+            state["done"] += res.get("uploaded", len(current))
+            if state["first"]:
+                state["pruned"] = res.get("replaced", len(pending_replace))
+                pending_replace.clear()
+                state["first"] = False
+            for it in current:
+                cache[it["_key"]] = {
+                    "mtime": it["_mtime"],
+                    "size": it["_size"],
+                    "uid": it["uid"],
+                    "name": it["name"],
+                }
+        except RuntimeError as exc:
+            state["failed"] += 1
+            for it in current:
+                cache.pop(it["_key"], None)
+            log("error", "文件上传失败（%d 个）：%s" % (len(current), exc))
+
+    for item in uploads:
+        if batch and (size + item["size"] > FILE_BATCH_BYTES or len(batch) >= 8):
+            flush(batch)
+            batch = []
+            size = 0
+        batch.append(item)
+        size += item["size"]
+    flush(batch)
+
+    return state["done"], state["failed"], state["pruned"]
+
+
 def mark_synced():
     """记录本次同步时的数据库版本，供「退出后自动上传」的守卫判重"""
     try:
@@ -386,7 +532,12 @@ def main():
         fail("找不到 WorkBuddy 数据：%s" % DB_PATH)
 
     cache = read_json(CACHE_PATH, {})
-    snapshot, transcripts = collect(cache)
+    # 缓存结构升级：v3.2.0 起产物条目带本地路径，旧条目需失效重算
+    if cache.get("_schema") != 2:
+        for key in [k for k in list(cache) if k.startswith("artifact:") or k.startswith("names:")]:
+            cache.pop(key, None)
+        cache["_schema"] = 2
+    snapshot, transcripts, file_plan = collect(cache)
 
     try:
         result = rpc(
@@ -424,16 +575,32 @@ def main():
                 cache.pop(it["path"], None)
             log("error", "对话正文上传失败（%d 条）：%s" % (len(batch), exc))
 
+    # 产物文件：只传内容有变化的，单文件 ≤4MB（更小的体积换来随时可看）
+    file_done = 0
+    file_failed = 0
+    file_pruned = 0
+    try:
+        uploads, replace = plan_files(file_plan, cache)
+        if uploads or replace:
+            file_done, file_failed, file_pruned = push_files(config, uploads, replace, cache)
+            if file_done:
+                log("info", "产物文件已上传：%s 个" % file_done)
+    except Exception as exc:  # 文件失败不应影响任务与对话的同步
+        file_failed += 1
+        log("error", "产物文件处理异常：%s" % exc)
+
     write_json(CACHE_PATH, cache)
     mark_synced()
 
     summary = "%d 个任务" % task_count
     if transcripts:
         summary += " · %d 段对话" % synced
+    if file_done:
+        summary += " · %d 个文件" % file_done
     if pruned:
         summary += " · 清理 %d 条已删任务" % pruned
     log("info", "同步完成：%s" % summary)
-    print(summary if not failed else summary + "（%d 批对话失败）" % failed)
+    print(summary if not (failed or file_failed) else summary + "（%d 批失败）" % (failed + file_failed))
 
 
 if __name__ == "__main__":
